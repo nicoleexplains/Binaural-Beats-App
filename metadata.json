@@ -1,0 +1,5 @@
+{
+  "name": "Binaural Beat Tone Generator",
+  "description": "An application that generates binaural beat tones based on user-specified frequencies. Users can enter a frequency from 0.00 Hz to 5000.0 Hz to create a specific auditory illusion, control the volume, and play or stop the tone.",
+  "requestFramePermissions": []
+}
