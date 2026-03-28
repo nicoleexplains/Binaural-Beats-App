@@ -224,9 +224,6 @@ const App = () => {
             canvas.height = rect.height * dpr;
         }
         
-        const scaledWidth = rect.width;
-        const scaledHeight = rect.height;
-
         const bufferLength = analyser.frequencyBinCount;
         const dataArray = new Uint8Array(bufferLength);
         
@@ -240,15 +237,15 @@ const App = () => {
             case 'curve':
             case 'line':
                 analyser.getByteTimeDomainData(dataArray);
-                const sliceWidth = scaledWidth / bufferLength;
+                const sliceWidth = canvas.width / bufferLength;
                 let x = 0;
                 for (let i = 0; i < bufferLength; i++) {
-                    const v = dataArray[i] / 128.0;
-                    const y = v * scaledHeight / 2;
+                    const v = dataArray[i] / 128.0; // value between 0 and 2
+                    const y = (v * canvas.height) / 2; // y position
                     if (i === 0) {
-                        canvasCtx.moveTo(x * dpr, y * dpr);
+                        canvasCtx.moveTo(x, y);
                     } else {
-                        canvasCtx.lineTo(x * dpr, y * dpr);
+                        canvasCtx.lineTo(x, y);
                     }
                     x += sliceWidth;
                 }
@@ -256,17 +253,55 @@ const App = () => {
                 canvasCtx.stroke();
                 break;
             case 'bars':
+                if (!audioContextRef.current) break;
                 analyser.getByteFrequencyData(dataArray);
-                const barWidth = (scaledWidth / bufferLength) * 2.5;
+            
+                const numBars = 128; // Define the number of bars to display
+                const barSpacing = 1 * dpr;
+                const barWidth = (canvas.width - (numBars - 1) * barSpacing) / numBars;
                 let barX = 0;
-                for (let i = 0; i < bufferLength; i++) {
-                    const barHeight = (dataArray[i] / 255) * scaledHeight;
-                    const r = barHeight + 100 * (i/bufferLength);
+            
+                const sampleRate = audioContextRef.current.sampleRate;
+                const maxFreq = sampleRate / 2;
+                
+                // Define the frequency range for the logarithmic scale
+                const minVisibleFreq = 20;
+                const minLogFreq = Math.log(minVisibleFreq);
+                const maxLogFreq = Math.log(maxFreq);
+                const logRange = maxLogFreq - minLogFreq;
+            
+                for (let i = 0; i < numBars; i++) {
+                    // Calculate the start and end frequencies for the current bar on a log scale
+                    const logStart = minLogFreq + (logRange / numBars) * i;
+                    const logEnd = minLogFreq + (logRange / numBars) * (i + 1);
+            
+                    const freqStart = Math.exp(logStart);
+                    const freqEnd = Math.exp(logEnd);
+            
+                    // Convert frequencies to indices in the dataArray
+                    const startIndex = Math.floor(freqStart * bufferLength / maxFreq);
+                    const endIndex = Math.min(Math.ceil(freqEnd * bufferLength / maxFreq), bufferLength - 1);
+                    
+                    let maxAmp = 0;
+                    // Find the maximum amplitude within this frequency range
+                    for (let j = startIndex; j <= endIndex; j++) {
+                        if (dataArray[j] > maxAmp) {
+                            maxAmp = dataArray[j];
+                        }
+                    }
+            
+                    const barHeight = (maxAmp / 255) * canvas.height;
+            
+                    // Use a color gradient for visual appeal
+                    const r = barHeight + 100 * (i / numBars);
                     const g = 140;
                     const b = 248;
-                    canvasCtx.fillStyle = `rgb(${r}, ${g}, ${b})`;
-                    canvasCtx.fillRect(barX * dpr, (scaledHeight - barHeight) * dpr, barWidth * dpr, barHeight * dpr);
-                    barX += barWidth + 1;
+                    canvasCtx.fillStyle = `rgb(${Math.floor(r)}, ${g}, ${b})`;
+                    
+                    // Draw the bar
+                    canvasCtx.fillRect(barX, canvas.height - barHeight, barWidth, barHeight);
+            
+                    barX += barWidth + barSpacing;
                 }
                 break;
         }
