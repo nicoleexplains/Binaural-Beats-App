@@ -29,10 +29,33 @@ interface FrequencyDefinition {
   description: string;
 }
 
-// --- Sound Effect URLs ---
-const CLICK_SOUND_URL = 'https://cdn.pixabay.com/audio/2022/03/15/audio_2433fe1503.mp3';
-const SAVE_LOAD_SOUND_URL = 'https://cdn.pixabay.com/audio/2022/03/10/audio_c848a67228.mp3';
-const DELETE_SOUND_URL = 'https://cdn.pixabay.com/audio/2022/03/15/audio_7621a1f196.mp3';
+// --- Sound Synthesis Helpers ---
+const createNoiseBuffer = (ctx: AudioContext, type: 'white' | 'pink') => {
+    const bufferSize = 2 * ctx.sampleRate;
+    const buffer = ctx.createBuffer(1, bufferSize, ctx.sampleRate);
+    const output = buffer.getChannelData(0);
+    if (type === 'white') {
+        for (let i = 0; i < bufferSize; i++) {
+            output[i] = Math.random() * 2 - 1;
+        }
+    } else {
+        let b0, b1, b2, b3, b4, b5, b6;
+        b0 = b1 = b2 = b3 = b4 = b5 = b6 = 0.0;
+        for (let i = 0; i < bufferSize; i++) {
+            const white = Math.random() * 2 - 1;
+            b0 = 0.99886 * b0 + white * 0.0555179;
+            b1 = 0.99332 * b1 + white * 0.0750759;
+            b2 = 0.96900 * b2 + white * 0.1538520;
+            b3 = 0.86650 * b3 + white * 0.3104856;
+            b4 = 0.55000 * b4 + white * 0.5329522;
+            b5 = -0.7616 * b5 - white * 0.0168980;
+            output[i] = b0 + b1 + b2 + b3 + b4 + b5 + b6 + white * 0.5362;
+            output[i] *= 0.11;
+            b6 = white * 0.115926;
+        }
+    }
+    return buffer;
+};
 
 const FREQUENCY_DEFINITIONS: FrequencyDefinition[] = [
     // Epsilon (< 0.5 Hz)
@@ -156,13 +179,7 @@ const FREQUENCY_DEFINITIONS: FrequencyDefinition[] = [
     { value: 10000, category: 'Rife', label: 'Cure-all (Alcoholism, Allergies, Headaches)', description: 'Commonly used "cure-all" Rife frequency. Used to treat alcoholism, allergies, headaches.' },
 ];
 
-const AMBIENT_SOUNDS = {
-  'None': '',
-  'Rain': 'https://cdn.pixabay.com/audio/2022/08/11/audio_29a28b52a5.mp3',
-  'Forest': 'https://cdn.pixabay.com/audio/2022/11/17/audio_8b24b2169b.mp3',
-  'Ocean Waves': 'https://cdn.pixabay.com/audio/2023/09/24/audio_959b85c2f7.mp3',
-  'White Noise': 'https://cdn.pixabay.com/audio/2022/05/29/audio_3439c2bdbd.mp3',
-};
+const AMBIENT_SOUNDS = ['None', 'Rain', 'Ocean Waves', 'White Noise', 'Pink Noise'];
 
 const App = () => {
     const [isPlaying, setIsPlaying] = useState(false);
@@ -183,16 +200,49 @@ const App = () => {
     // Fix: Initialize useRef with null. This resolves an error with older React type definitions where calling useRef without an argument is not supported when a generic is provided.
     const animationFrameRef = useRef<number | null>(null);
     const canvasRef = useRef<HTMLCanvasElement>(null);
-    const ambientAudioRef = useRef<HTMLAudioElement | null>(null);
-    const soundEffectAudioRef = useRef<HTMLAudioElement | null>(null);
+    const ambientNodesRef = useRef<{ source: AudioBufferSourceNode, output: AudioNode, lfo?: OscillatorNode } | null>(null);
+    const ambientGainNodeRef = useRef<GainNode | null>(null);
+    const uiAudioContextRef = useRef<AudioContext | null>(null);
 
-    const playSound = (soundUrl: string) => {
-        if (!soundEffectAudioRef.current) {
-            soundEffectAudioRef.current = new Audio();
+    const playUISound = useCallback((type: 'click' | 'save' | 'delete') => {
+        try {
+            if (!uiAudioContextRef.current) {
+                uiAudioContextRef.current = new (window.AudioContext || (window as any).webkitAudioContext)();
+            }
+            const ctx = uiAudioContextRef.current;
+            if (ctx.state === 'suspended') ctx.resume();
+
+            const osc = ctx.createOscillator();
+            const envelope = ctx.createGain();
+            osc.connect(envelope);
+            envelope.connect(ctx.destination);
+
+            const now = ctx.currentTime;
+            if (type === 'click') {
+                osc.frequency.setValueAtTime(800, now);
+                envelope.gain.setValueAtTime(0.1, now);
+                envelope.gain.exponentialRampToValueAtTime(0.001, now + 0.1);
+                osc.start(now);
+                osc.stop(now + 0.1);
+            } else if (type === 'save') {
+                osc.frequency.setValueAtTime(600, now);
+                osc.frequency.exponentialRampToValueAtTime(1200, now + 0.2);
+                envelope.gain.setValueAtTime(0.1, now);
+                envelope.gain.exponentialRampToValueAtTime(0.001, now + 0.2);
+                osc.start(now);
+                osc.stop(now + 0.2);
+            } else if (type === 'delete') {
+                osc.frequency.setValueAtTime(400, now);
+                osc.frequency.exponentialRampToValueAtTime(200, now + 0.3);
+                envelope.gain.setValueAtTime(0.1, now);
+                envelope.gain.exponentialRampToValueAtTime(0.001, now + 0.3);
+                osc.start(now);
+                osc.stop(now + 0.3);
+            }
+        } catch (e) {
+            console.error("Error playing UI sound:", e);
         }
-        soundEffectAudioRef.current.src = soundUrl;
-        soundEffectAudioRef.current.play().catch(e => console.error("Error playing sound effect:", e));
-    };
+    }, []);
 
     useEffect(() => {
         try {
@@ -340,11 +390,20 @@ const App = () => {
             leftChannelRef.current.start();
             rightChannelRef.current.start();
             
+            // Setup Ambient Gain
+            ambientGainNodeRef.current = audioCtx.createGain();
+            ambientGainNodeRef.current.gain.setValueAtTime(ambientVolume, audioCtx.currentTime);
+            ambientGainNodeRef.current.connect(audioCtx.destination);
+
             animationFrameRef.current = requestAnimationFrame(drawVisualizer);
         } else {
             if (audioContextRef.current) {
-                audioContextRef.current.close().catch(e => console.error(e));
+                if (audioContextRef.current.state !== 'closed') {
+                    audioContextRef.current.close().catch(e => console.error(e));
+                }
                 audioContextRef.current = null;
+                ambientNodesRef.current = null;
+                ambientGainNodeRef.current = null;
             }
             if (animationFrameRef.current) {
                 cancelAnimationFrame(animationFrameRef.current);
@@ -362,7 +421,10 @@ const App = () => {
 
         return () => {
             if (audioContextRef.current) {
-                audioContextRef.current.close().catch(e => console.error(e));
+                if (audioContextRef.current.state !== 'closed') {
+                    audioContextRef.current.close().catch(e => console.error(e));
+                }
+                audioContextRef.current = null;
             }
             if (animationFrameRef.current) {
                 cancelAnimationFrame(animationFrameRef.current);
@@ -386,26 +448,74 @@ const App = () => {
     }, [volume, isPlaying]);
 
     useEffect(() => {
-        if (!ambientAudioRef.current) {
-            ambientAudioRef.current = new Audio();
-            ambientAudioRef.current.loop = true;
+        if (!isPlaying || !audioContextRef.current || !ambientGainNodeRef.current) return;
+        
+        const ctx = audioContextRef.current;
+        
+        // Stop previous ambient sound
+        if (ambientNodesRef.current) {
+            ambientNodesRef.current.source.stop();
+            ambientNodesRef.current.lfo?.stop();
+            ambientNodesRef.current = null;
         }
-        if (selectedAmbient !== 'None' && AMBIENT_SOUNDS[selectedAmbient]) {
-            if (ambientAudioRef.current.src !== AMBIENT_SOUNDS[selectedAmbient]) {
-                 ambientAudioRef.current.src = AMBIENT_SOUNDS[selectedAmbient];
-            }
-            if (isPlaying) {
-                ambientAudioRef.current.play().catch(e => console.error("Error playing ambient sound:", e));
-            }
+
+        if (selectedAmbient === 'None') return;
+
+        let source: AudioBufferSourceNode;
+        let output: AudioNode;
+        let lfo: OscillatorNode | undefined;
+
+        if (selectedAmbient === 'White Noise') {
+            source = ctx.createBufferSource();
+            source.buffer = createNoiseBuffer(ctx, 'white');
+            source.loop = true;
+            output = source;
+        } else if (selectedAmbient === 'Pink Noise') {
+            source = ctx.createBufferSource();
+            source.buffer = createNoiseBuffer(ctx, 'pink');
+            source.loop = true;
+            output = source;
+        } else if (selectedAmbient === 'Rain') {
+            source = ctx.createBufferSource();
+            source.buffer = createNoiseBuffer(ctx, 'pink');
+            source.loop = true;
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 1000;
+            source.connect(filter);
+            output = filter;
+        } else if (selectedAmbient === 'Ocean Waves') {
+            source = ctx.createBufferSource();
+            source.buffer = createNoiseBuffer(ctx, 'white');
+            source.loop = true;
+            const filter = ctx.createBiquadFilter();
+            filter.type = 'lowpass';
+            filter.frequency.value = 500;
+            
+            lfo = ctx.createOscillator();
+            lfo.type = 'sine';
+            lfo.frequency.value = 0.1;
+            const lfoGain = ctx.createGain();
+            lfoGain.gain.value = 400;
+            lfo.connect(lfoGain);
+            lfoGain.connect(filter.frequency);
+            
+            source.connect(filter);
+            lfo.start();
+            output = filter;
         } else {
-            ambientAudioRef.current.pause();
-            ambientAudioRef.current.src = '';
+            return;
         }
+
+        source.connect(ambientGainNodeRef.current);
+        source.start();
+        ambientNodesRef.current = { source, output, lfo };
+
     }, [selectedAmbient, isPlaying]);
 
     useEffect(() => {
-        if (ambientAudioRef.current) {
-            ambientAudioRef.current.volume = ambientVolume;
+        if (ambientGainNodeRef.current && audioContextRef.current) {
+            ambientGainNodeRef.current.gain.setValueAtTime(ambientVolume, audioContextRef.current.currentTime);
         }
     }, [ambientVolume]);
     
@@ -422,7 +532,7 @@ const App = () => {
 
     const togglePlay = () => {
         setIsPlaying(!isPlaying);
-        playSound(CLICK_SOUND_URL);
+        playUISound('click');
     };
 
     const handleFrequencyChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -436,7 +546,7 @@ const App = () => {
         const value = parseFloat(e.target.value);
         if (!isNaN(value)) {
             setFrequency(value);
-            playSound(CLICK_SOUND_URL);
+            playUISound('click');
         }
     };
 
@@ -449,7 +559,7 @@ const App = () => {
 
     const handleAmbientChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
         setSelectedAmbient(e.target.value);
-        playSound(CLICK_SOUND_URL);
+        playUISound('click');
     };
     
     const handleAmbientVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -469,7 +579,7 @@ const App = () => {
         setPresets(updatedPresets);
         localStorage.setItem('binauralPresets', JSON.stringify(updatedPresets));
         setNewPresetName('');
-        playSound(SAVE_LOAD_SOUND_URL);
+        playUISound('save');
     };
     
     const handleLoadPreset = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -481,7 +591,7 @@ const App = () => {
             setVolume(preset.volume);
             setSelectedAmbient(preset.selectedAmbient);
             setAmbientVolume(preset.ambientVolume);
-            playSound(SAVE_LOAD_SOUND_URL);
+            playUISound('save');
         }
     };
 
@@ -494,7 +604,7 @@ const App = () => {
         setPresets(updatedPresets);
         localStorage.setItem('binauralPresets', JSON.stringify(updatedPresets));
         setSelectedPreset('');
-        playSound(DELETE_SOUND_URL);
+        playUISound('delete');
     };
 
     const handleChangeWaveform = () => {
@@ -503,7 +613,7 @@ const App = () => {
             if (prev === 'bars') return 'line';
             return 'curve';
         });
-        playSound(CLICK_SOUND_URL);
+        playUISound('click');
     };
     
     const currentFrequencyDefinition = FREQUENCY_DEFINITIONS.find(def => def.value === frequency);
@@ -595,7 +705,7 @@ const App = () => {
                                         id="ambient-select" value={selectedAmbient} onChange={handleAmbientChange}
                                         className="w-full mt-1 bg-gray-800 border border-gray-600 rounded-md p-2 focus-ring-indigo"
                                     >
-                                        {Object.keys(AMBIENT_SOUNDS).map(sound => (
+                                        {AMBIENT_SOUNDS.map(sound => (
                                             <option key={sound} value={sound}>{sound}</option>
                                         ))}
                                     </select>
