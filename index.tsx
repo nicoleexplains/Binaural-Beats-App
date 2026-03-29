@@ -190,7 +190,9 @@ const App = () => {
     const [newPresetName, setNewPresetName] = useState('');
     const [selectedAmbient, setSelectedAmbient] = useState('None');
     const [ambientVolume, setAmbientVolume] = useState(0.5);
-    const [waveformType, setWaveformType] = useState<'curve' | 'bars' | 'line'>('curve');
+    const [waveformType, setWaveformType] = useState<'curve' | 'bars' | 'line' | 'dots' | 'circle'>('curve');
+    const [visualizerSmoothing, setVisualizerSmoothing] = useState(0.8);
+    const [visualizerTheme, setVisualizerTheme] = useState<'indigo' | 'emerald' | 'amber' | 'rose' | 'cyan'>('indigo');
 
     const audioContextRef = useRef<AudioContext | null>(null);
     const leftChannelRef = useRef<OscillatorNode | null>(null);
@@ -255,6 +257,14 @@ const App = () => {
         }
     }, []);
 
+    const VISUALIZER_THEMES = {
+        indigo: { primary: 'rgb(129, 140, 248)', glow: 'rgba(129, 140, 248, 0.5)', accent: 'rgb(99, 102, 241)' },
+        emerald: { primary: 'rgb(52, 211, 153)', glow: 'rgba(52, 211, 153, 0.5)', accent: 'rgb(16, 185, 129)' },
+        amber: { primary: 'rgb(251, 191, 36)', glow: 'rgba(251, 191, 36, 0.5)', accent: 'rgb(245, 158, 11)' },
+        rose: { primary: 'rgb(251, 113, 133)', glow: 'rgba(251, 113, 133, 0.5)', accent: 'rgb(244, 63, 94)' },
+        cyan: { primary: 'rgb(34, 211, 238)', glow: 'rgba(34, 211, 238, 0.5)', accent: 'rgb(6, 182, 212)' },
+    };
+
     const drawVisualizer = useCallback(() => {
         if (!analyserRef.current || !canvasRef.current) {
             if (isPlaying) animationFrameRef.current = requestAnimationFrame(drawVisualizer);
@@ -266,6 +276,9 @@ const App = () => {
         const canvasCtx = canvas.getContext('2d');
         if (!canvasCtx) return;
 
+        // Set smoothing
+        analyser.smoothingTimeConstant = visualizerSmoothing;
+
         // Set canvas resolution for high DPI displays
         const dpr = window.devicePixelRatio || 1;
         const rect = canvas.getBoundingClientRect();
@@ -276,22 +289,44 @@ const App = () => {
         
         const bufferLength = analyser.frequencyBinCount;
         const dataArray = new Uint8Array(bufferLength);
+        const theme = VISUALIZER_THEMES[visualizerTheme];
         
-        canvasCtx.fillStyle = 'rgb(17, 24, 39)'; // bg-gray-900
+        canvasCtx.fillStyle = 'rgb(10, 10, 12)'; // Match app bg
         canvasCtx.fillRect(0, 0, canvas.width, canvas.height);
+        
+        // Draw grid lines for hardware feel
+        canvasCtx.strokeStyle = 'rgba(55, 65, 81, 0.3)';
+        canvasCtx.lineWidth = 1;
+        const gridSize = 40 * dpr;
+        for (let i = 0; i < canvas.width; i += gridSize) {
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(i, 0);
+            canvasCtx.lineTo(i, canvas.height);
+            canvasCtx.stroke();
+        }
+        for (let i = 0; i < canvas.height; i += gridSize) {
+            canvasCtx.beginPath();
+            canvasCtx.moveTo(0, i);
+            canvasCtx.lineTo(canvas.width, i);
+            canvasCtx.stroke();
+        }
+
         canvasCtx.lineWidth = 2 * dpr;
-        canvasCtx.strokeStyle = 'rgb(129, 140, 248)'; // indigo-400
-        canvasCtx.beginPath();
+        canvasCtx.strokeStyle = theme.primary;
+        canvasCtx.fillStyle = theme.primary;
+        canvasCtx.shadowBlur = 10;
+        canvasCtx.shadowColor = theme.glow;
         
         switch (waveformType) {
             case 'curve':
             case 'line':
                 analyser.getByteTimeDomainData(dataArray);
+                canvasCtx.beginPath();
                 const sliceWidth = canvas.width / bufferLength;
                 let x = 0;
                 for (let i = 0; i < bufferLength; i++) {
-                    const v = dataArray[i] / 128.0; // value between 0 and 2
-                    const y = (v * canvas.height) / 2; // y position
+                    const v = dataArray[i] / 128.0;
+                    const y = (v * canvas.height) / 2;
                     if (i === 0) {
                         canvasCtx.moveTo(x, y);
                     } else {
@@ -302,62 +337,76 @@ const App = () => {
                 canvasCtx.lineTo(canvas.width, canvas.height / 2);
                 canvasCtx.stroke();
                 break;
+            case 'dots':
+                analyser.getByteTimeDomainData(dataArray);
+                const dotSpacing = 8 * dpr;
+                for (let i = 0; i < bufferLength; i += 4) {
+                    const v = dataArray[i] / 128.0;
+                    const y = (v * canvas.height) / 2;
+                    const dotX = (i / bufferLength) * canvas.width;
+                    canvasCtx.beginPath();
+                    canvasCtx.arc(dotX, y, 1.5 * dpr, 0, Math.PI * 2);
+                    canvasCtx.fill();
+                }
+                break;
             case 'bars':
                 if (!audioContextRef.current) break;
                 analyser.getByteFrequencyData(dataArray);
             
-                const numBars = 128; // Define the number of bars to display
-                const barSpacing = 1 * dpr;
+                const numBars = 64;
+                const barSpacing = 2 * dpr;
                 const barWidth = (canvas.width - (numBars - 1) * barSpacing) / numBars;
                 let barX = 0;
             
                 const sampleRate = audioContextRef.current.sampleRate;
                 const maxFreq = sampleRate / 2;
-                
-                // Define the frequency range for the logarithmic scale
                 const minVisibleFreq = 20;
                 const minLogFreq = Math.log(minVisibleFreq);
                 const maxLogFreq = Math.log(maxFreq);
                 const logRange = maxLogFreq - minLogFreq;
             
                 for (let i = 0; i < numBars; i++) {
-                    // Calculate the start and end frequencies for the current bar on a log scale
                     const logStart = minLogFreq + (logRange / numBars) * i;
                     const logEnd = minLogFreq + (logRange / numBars) * (i + 1);
-            
                     const freqStart = Math.exp(logStart);
                     const freqEnd = Math.exp(logEnd);
-            
-                    // Convert frequencies to indices in the dataArray
                     const startIndex = Math.floor(freqStart * bufferLength / maxFreq);
                     const endIndex = Math.min(Math.ceil(freqEnd * bufferLength / maxFreq), bufferLength - 1);
                     
                     let maxAmp = 0;
-                    // Find the maximum amplitude within this frequency range
                     for (let j = startIndex; j <= endIndex; j++) {
-                        if (dataArray[j] > maxAmp) {
-                            maxAmp = dataArray[j];
-                        }
+                        if (dataArray[j] > maxAmp) maxAmp = dataArray[j];
                     }
             
                     const barHeight = (maxAmp / 255) * canvas.height;
-            
-                    // Use a color gradient for visual appeal
-                    const r = barHeight + 100 * (i / numBars);
-                    const g = 140;
-                    const b = 248;
-                    canvasCtx.fillStyle = `rgb(${Math.floor(r)}, ${g}, ${b})`;
-                    
-                    // Draw the bar
                     canvasCtx.fillRect(barX, canvas.height - barHeight, barWidth, barHeight);
-            
                     barX += barWidth + barSpacing;
                 }
                 break;
+            case 'circle':
+                analyser.getByteFrequencyData(dataArray);
+                const centerX = canvas.width / 2;
+                const centerY = canvas.height / 2;
+                const radius = Math.min(centerX, centerY) * 0.6;
+                
+                canvasCtx.beginPath();
+                for (let i = 0; i < bufferLength; i += 4) {
+                    const angle = (i / bufferLength) * Math.PI * 2;
+                    const amp = dataArray[i] / 255;
+                    const r = radius + amp * 50 * dpr;
+                    const circleX = centerX + Math.cos(angle) * r;
+                    const circleY = centerY + Math.sin(angle) * r;
+                    if (i === 0) canvasCtx.moveTo(circleX, circleY);
+                    else canvasCtx.lineTo(circleX, circleY);
+                }
+                canvasCtx.closePath();
+                canvasCtx.stroke();
+                break;
         }
         
+        canvasCtx.shadowBlur = 0; // Reset shadow for next frame
         animationFrameRef.current = requestAnimationFrame(drawVisualizer);
-    }, [waveformType, isPlaying]);
+    }, [waveformType, isPlaying, visualizerSmoothing, visualizerTheme]);
 
 
     useEffect(() => {
@@ -553,8 +602,6 @@ const App = () => {
     const handleVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const newVolume = parseFloat(e.target.value);
         setVolume(newVolume);
-        const slider = e.target;
-        slider.style.setProperty('--slider-progress', `${newVolume * 100}%`);
     };
 
     const handleAmbientChange = (e: React.ChangeEvent<HTMLSelectElement>) => {
@@ -565,8 +612,6 @@ const App = () => {
     const handleAmbientVolumeChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const newVolume = parseFloat(e.target.value);
         setAmbientVolume(newVolume);
-        const slider = e.target;
-        slider.style.setProperty('--slider-progress', `${newVolume * 100}%`);
     };
 
     const handleSavePreset = () => {
@@ -608,11 +653,9 @@ const App = () => {
     };
 
     const handleChangeWaveform = () => {
-        setWaveformType(prev => {
-            if (prev === 'curve') return 'bars';
-            if (prev === 'bars') return 'line';
-            return 'curve';
-        });
+        const types: ('curve' | 'bars' | 'line' | 'dots' | 'circle')[] = ['curve', 'bars', 'line', 'dots', 'circle'];
+        const currentIndex = types.indexOf(waveformType);
+        setWaveformType(types[(currentIndex + 1) % types.length]);
         playUISound('click');
     };
     
@@ -625,159 +668,268 @@ const App = () => {
     }, {} as Record<string, FrequencyDefinition[]>);
 
     return (
-        <div className="min-h-screen bg-gray-900 text-white flex items-center justify-center p-4">
-            <div className="w-full max-w-4xl bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8 space-y-6">
-                <header>
-                    <h1 className="text-3xl font-bold text-indigo-400 text-center">Binaural Beat Generator</h1>
-                    <p className="text-center text-gray-400 mt-2">Craft your own soundscape for focus, relaxation, or meditation.</p>
+        <div className="min-h-screen bg-[#0a0a0c] text-[#f3f4f6] flex items-center justify-center p-4 selection:bg-indigo-500/30">
+            <div className="w-full max-w-5xl bg-[#151619] rounded-2xl shadow-2xl p-6 md:p-10 space-y-8 border border-[#374151] relative overflow-hidden">
+                <div className="absolute top-0 left-0 w-full h-1 bg-gradient-to-r from-transparent via-indigo-500/50 to-transparent"></div>
+                
+                <header className="flex flex-col items-center space-y-2">
+                    <div className="flex items-center space-x-3">
+                        <div className="w-2 h-2 rounded-full bg-indigo-500 animate-pulse shadow-[0_0_10px_rgba(99,102,241,0.8)]"></div>
+                        <h1 className="text-3xl md:text-4xl font-bold text-white tracking-tighter uppercase italic text-center">Binaural Beat <span className="text-indigo-500">Tone Generator</span></h1>
+                    </div>
+                    <p className="micro-label">by Nicole Tate | Professional Auditory Entrainment System v2.0</p>
                 </header>
 
-                <div className="grid grid-cols-1 md:grid-cols-2 gap-8">
-                    <div className="space-y-6">
-                        <div className="bg-gray-700 p-4 rounded-lg">
-                            <h2 className="text-xl font-semibold mb-4 text-gray-200">Master Controls</h2>
-                            <div className="flex items-center space-x-4">
+                <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+                    <div className="lg:col-span-7 space-y-6">
+                        <div className="hw-card p-6 rounded-xl">
+                            <h2 className="micro-label mb-6 flex items-center">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 mr-2"></span>
+                                Master Output
+                            </h2>
+                            <div className="flex flex-col md:flex-row items-center gap-8">
                                 <button
                                     onClick={togglePlay}
-                                    className="p-4 bg-indigo-500 hover:bg-indigo-600 rounded-full transition-all duration-200 ease-in-out focus-ring-indigo"
+                                    className={`w-24 h-24 flex items-center justify-center bg-[#1f2937] hover:bg-[#374151] rounded-full transition-all duration-300 border-2 border-[#374151] group ${isPlaying ? 'is-playing-glow border-indigo-500' : ''}`}
                                     aria-label={isPlaying ? 'Pause' : 'Play'}
                                 >
-                                    {isPlaying ? <PauseIcon className="h-8 w-8 text-white" /> : <PlayIcon className="h-8 w-8 text-white" />}
+                                    {isPlaying ? 
+                                        <PauseIcon className="h-10 w-10 text-indigo-400 group-hover:scale-110 transition-transform" /> : 
+                                        <PlayIcon className="h-10 w-10 text-white group-hover:scale-110 transition-transform" />
+                                    }
                                 </button>
-                                <div className="w-full">
-                                    <label htmlFor="volume" className="block text-sm font-medium text-gray-300">Tone Volume</label>
+                                <div className="flex-grow w-full space-y-4">
+                                    <div className="flex justify-between items-end">
+                                        <label htmlFor="volume" className="micro-label">Main Gain</label>
+                                        <div className="readout px-4 py-2 rounded font-mono text-base text-indigo-400 glow-text">
+                                            {(volume * 100).toFixed(0)}<span className="text-xs ml-1 opacity-50">dB</span>
+                                        </div>
+                                    </div>
                                     <input
                                         id="volume"
                                         type="range" min="0" max="1" step="0.01"
                                         value={volume}
                                         onChange={handleVolumeChange}
-                                        className="mt-1"
+                                        className="w-full"
                                         style={{ '--slider-progress': `${volume * 100}%` } as React.CSSProperties}
                                     />
+                                    <div className="flex justify-between micro-label opacity-30">
+                                        <span>-INF</span>
+                                        <span>0dB</span>
+                                    </div>
                                 </div>
                             </div>
                         </div>
 
-                        <div className="bg-gray-700 p-4 rounded-lg">
-                            <h2 className="text-xl font-semibold mb-2 text-gray-200">Frequency Control</h2>
-                             <p className="text-gray-400 mb-4 text-sm">Target Frequency: {frequency.toFixed(2)} Hz</p>
-                            <div className="space-y-4">
-                                 <div>
-                                    <label htmlFor="frequency-slider" className="block text-sm font-medium text-gray-300">Adjust Frequency (0.1 - 1000 Hz)</label>
-                                    <input
-                                        id="frequency-slider"
-                                        type="range" min="0.1" max="1000" step="0.01"
-                                        value={frequency}
-                                        onChange={handleFrequencyChange}
-                                        className="w-full mt-1"
-                                    />
+                        <div className="hw-card p-6 rounded-xl">
+                            <h2 className="micro-label mb-6 flex items-center">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 mr-2"></span>
+                                Frequency Synthesis
+                            </h2>
+                            
+                            <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-8">
+                                <div className="readout p-4 rounded-lg flex flex-col items-center justify-center space-y-1">
+                                    <span className="micro-label">Current Frequency</span>
+                                    <span className="font-mono text-4xl text-indigo-400 glow-text leading-none">
+                                        {frequency.toFixed(2)}
+                                        <span className="text-sm ml-1 text-indigo-500/50">Hz</span>
+                                    </span>
                                 </div>
-                                <div>
-                                    <label htmlFor="frequency-preset" className="block text-sm font-medium text-gray-300">Select Frequency Preset</label>
+                                <div className="flex flex-col justify-center space-y-3">
+                                    <label htmlFor="frequency-preset" className="micro-label">Preset Library</label>
                                     <select
                                         id="frequency-preset" value={frequency} onChange={handleFrequencyPresetChange}
-                                        className="w-full mt-1 bg-gray-800 border border-gray-600 rounded-md p-2 focus-ring-indigo"
+                                        className="w-full bg-[#0a0a0c] border border-[#374151] rounded-lg p-3 focus:ring-2 focus:ring-indigo-500/50 outline-none text-base text-[#9ca3af] appearance-none cursor-pointer hover:border-indigo-500/30 transition-colors"
                                     >
                                         {Object.entries(groupedFrequencies).map(([category, freqs]) => (
-                                            <optgroup label={category} key={category}>
+                                            <optgroup label={category} key={category} className="bg-[#151619] text-[#4b5563]">
                                                 {freqs.map(def => (
-                                                    <option key={`${def.value}-${def.label}`} value={def.value}>{def.label} ({def.value} Hz)</option>
+                                                    <option key={`${def.value}-${def.label}`} value={def.value} className="text-[#f3f4f6]">{def.label} ({def.value} Hz)</option>
                                                 ))}
                                             </optgroup>
                                         ))}
                                     </select>
                                 </div>
+                            </div>
+
+                            <div className="space-y-8">
+                                 <div>
+                                    <div className="flex justify-between items-center mb-4">
+                                        <label htmlFor="frequency-slider" className="micro-label">Manual Sweep (0.1 - 1000 Hz)</label>
+                                    </div>
+                                    <input
+                                        id="frequency-slider"
+                                        type="range" min="0.1" max="1000" step="0.01"
+                                        value={frequency}
+                                        onChange={handleFrequencyChange}
+                                        className="w-full"
+                                        style={{ '--slider-progress': `${((frequency - 0.1) / (1000 - 0.1)) * 100}%` } as React.CSSProperties}
+                                    />
+                                    <div className="flex justify-between micro-label opacity-30 mt-2">
+                                        <span>0.1 Hz</span>
+                                        <span>500 Hz</span>
+                                        <span>1000 Hz</span>
+                                    </div>
+                                </div>
+                                
                                 {currentFrequencyDefinition && (
-                                    <div className="p-3 bg-gray-800 rounded-md text-sm">
-                                        <p className="font-semibold text-indigo-300">{currentFrequencyDefinition.label}</p>
-                                        <p className="text-gray-400 mt-1">{currentFrequencyDefinition.description}</p>
+                                    <div className="p-5 bg-indigo-500/5 rounded-lg border border-indigo-500/10">
+                                        <div className="flex items-center space-x-2 mb-3">
+                                            <span className="px-2 py-1 bg-indigo-500/20 text-indigo-400 rounded text-[10px] font-bold uppercase tracking-tighter">
+                                                {currentFrequencyDefinition.category}
+                                            </span>
+                                            <p className="text-sm font-bold text-[#f3f4f6] uppercase tracking-wide">{currentFrequencyDefinition.label}</p>
+                                        </div>
+                                        <p className="text-[#9ca3af] text-sm leading-relaxed italic">"{currentFrequencyDefinition.description}"</p>
                                     </div>
                                 )}
                             </div>
                         </div>
-
-                        <div className="bg-gray-700 p-4 rounded-lg">
-                            <h2 className="text-xl font-semibold mb-4 text-gray-200">Ambient Sound</h2>
-                            <div className="space-y-4">
-                                <div>
-                                    <label htmlFor="ambient-select" className="block text-sm font-medium text-gray-300">Choose a sound</label>
-                                    <select
-                                        id="ambient-select" value={selectedAmbient} onChange={handleAmbientChange}
-                                        className="w-full mt-1 bg-gray-800 border border-gray-600 rounded-md p-2 focus-ring-indigo"
-                                    >
-                                        {AMBIENT_SOUNDS.map(sound => (
-                                            <option key={sound} value={sound}>{sound}</option>
-                                        ))}
-                                    </select>
-                                </div>
-                                <div>
-                                    <label htmlFor="ambient-volume" className="block text-sm font-medium text-gray-300">Ambient Volume</label>
-                                    <input
-                                        id="ambient-volume"
-                                        type="range" min="0" max="1" step="0.01"
-                                        value={ambientVolume} onChange={handleAmbientVolumeChange}
-                                        className="mt-1"
-                                        style={{ '--slider-progress': `${ambientVolume * 100}%` } as React.CSSProperties}
-                                    />
-                                </div>
-                            </div>
-                        </div>
                     </div>
 
-                    <div className="space-y-6 flex flex-col">
-                        <div className="bg-gray-700 p-4 rounded-lg flex-grow flex flex-col">
-                            <h2 className="text-xl font-semibold mb-4 text-gray-200">Visualizer</h2>
-                            <div className="bg-gray-900 rounded-md w-full flex-grow aspect-[16/9] min-h-[200px] md:min-h-0">
-                                <canvas ref={canvasRef} className="w-full h-full rounded-md"></canvas>
+                    <div className="lg:col-span-5 space-y-6 flex flex-col">
+                        <div className="hw-card p-6 rounded-xl flex-grow flex flex-col">
+                            <h2 className="micro-label mb-6 flex items-center">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 mr-2"></span>
+                                Signal Visualizer
+                            </h2>
+                            <div className="bg-black rounded-lg w-full flex-grow aspect-[4/3] border border-[#374151] overflow-hidden relative group">
+                                <canvas ref={canvasRef} className="w-full h-full"></canvas>
+                                <div className="absolute top-2 right-2 flex space-x-2 opacity-0 group-hover:opacity-100 transition-opacity">
+                                    <div className="px-2 py-1 bg-black/80 border border-indigo-500/30 rounded text-[8px] font-mono text-indigo-400 uppercase">
+                                        Live Feed
+                                    </div>
+                                </div>
                             </div>
-                            <div className="grid grid-cols-2 gap-2 mt-4">
+                            <div className="grid grid-cols-2 gap-3 mt-6">
                                <button 
                                    onClick={handleChangeWaveform} 
-                                   className="w-full bg-indigo-500 hover:bg-indigo-600 text-white font-medium py-2 px-4 rounded-md transition duration-200 focus-ring-indigo"
+                                   className="w-full bg-[#1f2937] hover:bg-[#374151] text-[#f3f4f6] text-xs font-bold uppercase tracking-widest py-3 px-4 rounded-lg transition duration-200 border border-[#374151] active:translate-y-0.5"
                                 >
-                                   Change Waveform
-                               </button>
-                               <p className="col-span-1 flex items-center justify-center text-gray-300 bg-gray-800 rounded-md">
-                                   Style: <span className="font-semibold capitalize ml-2">{waveformType}</span>
-                               </p>
+                                   View Mode
+                                </button>
+                                <div className="flex items-center justify-center text-xs font-mono font-bold uppercase tracking-widest text-indigo-400 bg-black/40 border border-[#374151] rounded-lg">
+                                    {waveformType}
+                                </div>
+                           </div>
+
+                           <div className="mt-6 space-y-4">
+                               <div className="space-y-2">
+                                   <div className="flex justify-between items-center">
+                                       <label className="micro-label">Smoothing</label>
+                                       <span className="font-mono text-[10px] text-indigo-400">{(visualizerSmoothing * 100).toFixed(0)}%</span>
+                                   </div>
+                                   <input 
+                                       type="range" min="0.1" max="0.99" step="0.01"
+                                       value={visualizerSmoothing}
+                                       onChange={(e) => setVisualizerSmoothing(parseFloat(e.target.value))}
+                                       className="w-full"
+                                       style={{ '--slider-progress': `${((visualizerSmoothing - 0.1) / (0.99 - 0.1)) * 100}%` } as React.CSSProperties}
+                                   />
+                               </div>
+
+                               <div className="space-y-2">
+                                   <label className="micro-label">Color Theme</label>
+                                   <div className="flex justify-between gap-2">
+                                       {(['indigo', 'emerald', 'amber', 'rose', 'cyan'] as const).map((t) => (
+                                           <button
+                                               key={t}
+                                               onClick={() => { playUISound('click'); setVisualizerTheme(t); }}
+                                               className={`flex-grow h-6 rounded-md transition-all duration-200 border-2 ${visualizerTheme === t ? 'border-white scale-110' : 'border-transparent opacity-50 hover:opacity-100'}`}
+                                               style={{ backgroundColor: VISUALIZER_THEMES[t].accent }}
+                                               title={t}
+                                           />
+                                       ))}
+                                   </div>
+                               </div>
                            </div>
                         </div>
 
-                        <div className="bg-gray-700 p-4 rounded-lg">
-                            <h2 className="text-xl font-semibold mb-4 text-gray-200">Presets</h2>
+                        <div className="hw-card p-6 rounded-xl">
+                            <h2 className="micro-label mb-6 flex items-center">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 mr-2"></span>
+                                Ambient Engine
+                            </h2>
+                            <div className="space-y-6">
+                                <div className="grid grid-cols-2 gap-4">
+                                    <div className="space-y-2">
+                                        <label htmlFor="ambient-select" className="micro-label">Source</label>
+                                        <select
+                                            id="ambient-select" value={selectedAmbient} onChange={handleAmbientChange}
+                                            className="w-full bg-[#0a0a0c] border border-[#374151] rounded-lg p-3 focus:ring-2 focus:ring-indigo-500/50 outline-none text-xs text-[#9ca3af] appearance-none cursor-pointer"
+                                        >
+                                            {AMBIENT_SOUNDS.map(sound => (
+                                                <option key={sound} value={sound}>{sound}</option>
+                                            ))}
+                                        </select>
+                                    </div>
+                                    <div className="space-y-2">
+                                        <div className="flex justify-between items-center">
+                                            <label htmlFor="ambient-volume" className="micro-label">Level</label>
+                                            <span className="font-mono text-xs text-indigo-400">{(ambientVolume * 100).toFixed(0)}%</span>
+                                        </div>
+                                        <input
+                                            id="ambient-volume"
+                                            type="range" min="0" max="1" step="0.01"
+                                            value={ambientVolume} onChange={handleAmbientVolumeChange}
+                                            className="w-full"
+                                            style={{ '--slider-progress': `${ambientVolume * 100}%` } as React.CSSProperties}
+                                        />
+                                    </div>
+                                </div>
+                            </div>
+                        </div>
+
+                        <div className="hw-card p-6 rounded-xl">
+                            <h2 className="micro-label mb-6 flex items-center">
+                                <span className="w-1.5 h-1.5 rounded-full bg-indigo-500 mr-2"></span>
+                                Memory Bank
+                            </h2>
                             <div className="space-y-4">
                                 <div className="flex space-x-2">
                                     <input
                                         type="text" value={newPresetName} onChange={(e) => setNewPresetName(e.target.value)}
-                                        placeholder="New preset name"
-                                        className="flex-grow bg-gray-800 border border-gray-600 rounded-md p-2 focus-ring-indigo"
+                                        placeholder="NEW_PRESET_ID"
+                                        className="flex-grow bg-[#0a0a0c] border border-[#374151] rounded-lg p-3 focus:ring-2 focus:ring-indigo-500/50 outline-none text-sm font-mono text-[#f3f4f6] placeholder:text-[#4b5563]"
                                     />
                                     <button
                                         onClick={handleSavePreset}
-                                        className="bg-indigo-500 hover:bg-indigo-600 text-white font-medium py-2 px-4 rounded-md transition duration-200 focus-ring-indigo"
+                                        className="bg-indigo-500 hover:bg-indigo-600 text-white text-xs font-bold uppercase tracking-widest py-3 px-6 rounded-lg transition duration-200 shadow-lg shadow-indigo-500/20 active:translate-y-0.5"
                                     >
-                                        Save
+                                        Store
                                     </button>
                                 </div>
                                 <div className="flex space-x-2">
                                     <select
                                         value={selectedPreset} onChange={handleLoadPreset}
-                                        className="flex-grow bg-gray-800 border border-gray-600 rounded-md p-2 focus-ring-indigo"
+                                        className="flex-grow bg-[#0a0a0c] border border-[#374151] rounded-lg p-3 focus:ring-2 focus:ring-indigo-500/50 outline-none text-sm text-[#9ca3af] appearance-none cursor-pointer"
                                     >
-                                        <option value="">Load a preset...</option>
+                                        <option value="">RECALL...</option>
                                         {presets.map(p => ( <option key={p.name} value={p.name}>{p.name}</option> ))}
                                     </select>
                                     <button
                                         onClick={handleDeletePreset} disabled={!selectedPreset}
-                                        className="bg-red-600 hover:bg-red-700 disabled:bg-red-800 disabled:cursor-not-allowed text-white font-medium py-2 px-4 rounded-md transition duration-200 focus-ring-red"
+                                        className="bg-red-950/20 hover:bg-red-900/40 text-red-500 border border-red-900/50 text-xs font-bold uppercase tracking-widest py-3 px-6 rounded-lg transition duration-200 disabled:opacity-30 disabled:cursor-not-allowed active:translate-y-0.5"
                                     >
-                                        Delete
+                                        Purge
                                     </button>
                                 </div>
                             </div>
                         </div>
                     </div>
                 </div>
+                
+                <footer className="pt-6 border-t border-[#374151] flex justify-between items-center">
+                    <div className="flex space-x-4">
+                        <div className="flex items-center space-x-1">
+                            <div className={`w-1.5 h-1.5 rounded-full ${isPlaying ? 'bg-green-500 animate-pulse' : 'bg-red-500'}`}></div>
+                            <span className="micro-label">{isPlaying ? 'System Active' : 'Standby'}</span>
+                        </div>
+                    </div>
+                    <div className="micro-label opacity-30">
+                        Binaural Beat Tone Generator © 2026 | by Nicole Tate
+                    </div>
+                </footer>
             </div>
         </div>
     );
